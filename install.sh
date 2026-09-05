@@ -19,9 +19,11 @@ dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
 
 command -v git >/dev/null 2>&1 || { red "git is required."; exit 1; }
 
+# Create first, then test: mkdir -p succeeds on a directory that already exists,
+# writable or not, so testing it alone would pick a directory the copy cannot use.
 if [ -n "${GIT_LIVEDEMO_PREFIX:-}" ]; then
   PREFIX=$GIT_LIVEDEMO_PREFIX
-elif [ -w "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin" 2>/dev/null; then
+elif mkdir -p "$HOME/.local/bin" 2>/dev/null && [ -w "$HOME/.local/bin" ]; then
   PREFIX="$HOME/.local/bin"
 elif [ -w /usr/local/bin ]; then
   PREFIX=/usr/local/bin
@@ -50,7 +52,8 @@ fi
 head -n 1 "$TMP" | grep -q '^#!' || { red "Downloaded file is not a script."; exit 1; }
 grep -q 'git-livedemo' "$TMP" || { red "Downloaded file does not look like git-livedemo."; exit 1; }
 
-mkdir -p "$PREFIX"
+mkdir -p "$PREFIX" 2>/dev/null || { red "Cannot create $PREFIX."; exit 1; }
+[ -w "$PREFIX" ] || { red "$PREFIX is not writable. Set GIT_LIVEDEMO_PREFIX=/somewhere/on/PATH."; exit 1; }
 cp "$TMP" "$TARGET"
 chmod +x "$TARGET"
 

@@ -147,12 +147,15 @@ branch and never touches yours. On top of that, it refuses rather than destroy:
 | situation | what happens |
 |---|---|
 | uncommitted changes to tracked files | refuses, tells you to commit or stash |
-| an untracked file the step would overwrite | refuses, names the file |
+| an untracked file the step would overwrite | refuses, names the file — on every step, not just the first |
 | an untracked file the step does not touch | left alone — `target/`, `.idea/`, scratch notes all survive |
+| step 0, which empties the working tree | your `.gitignore` files stay put, so ignored build output stays ignored |
 | the playback branch holds a commit that is not a step | refuses rather than rewind it |
 
 Editing a tracked file mid-demo is discarded by the next step. That is deliberate: a
 mistyped live edit cannot derail the rest of the talk.
+
+Started from a detached `HEAD`? `exit` puts you back on that commit, not on `main`.
 
 State lives in `.git/livedemo/`, so there is nothing to add to `.gitignore` and nothing
 you can accidentally commit.
@@ -162,12 +165,16 @@ you can accidentally commit.
 Already committed the demo up? `git livedemo use main` and you are done — a new commit on
 that branch is a new step, automatically.
 
-Prefer to grow it as you go? Build the change in the working tree and append it. This
-writes to a separate `steps` branch and leaves yours alone:
+Prefer to grow it as you go? Build the change in the working tree and append it. It
+lands on the steps branch — `steps` by default, or whichever branch you last passed to
+`use`; the confirmation line names it:
 
 ```bash
 git livedemo record "Step 3: wire the database"
 ```
+
+Recording mid-playback is refused: the working tree holds a replayed step then, not new
+work, and step 0 holds nothing at all.
 
 Either way, **keep every step green**. Run your build before recording or committing a
 step; one that does not compile is a step you cannot demo.
@@ -179,6 +186,7 @@ step; one that does not compile is a step you cannot demo.
 | `GIT_LIVEDEMO_PLAY_BRANCH` | `livedemo` | branch playback runs on |
 | `GIT_LIVEDEMO_STEPS_REF` | `steps` | steps branch, overriding `use` for one command |
 | `GIT_LIVEDEMO_PREFIX` | `~/.local/bin` | install directory |
+| `NO_COLOR` | unset | any value turns colour off; it is off anyway when output is not a terminal |
 
 ## Tests
 
@@ -186,8 +194,9 @@ step; one that does not compile is a step you cannot demo.
 ./test/test.sh
 ```
 
-32 assertions over real repositories: diff shapes, every guard, an ignored build
-directory, and a repository with no commits at all.
+62 assertions over real repositories: diff shapes, every guard, an ignored build
+directory, quoted and space-edged filenames, symlinks, two steps sharing a tree, a
+detached `HEAD`, and a repository with no commits at all.
 
 ## License
 

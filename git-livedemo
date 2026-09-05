@@ -14,10 +14,18 @@ set -euo pipefail
 VERSION=1.0.0
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 PLAY_REF="refs/heads/${GIT_LIVEDEMO_PLAY_BRANCH:-livedemo}"
+TAB=$'\t'
 
-die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
-say() { printf '\033[36m%s\033[0m\n' "$*"; }
-dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+# Colour belongs to terminals: piped or redirected output has to stay plain, or it
+# lands as escape noise in logs, greps and IDE task panes. NO_COLOR turns it off.
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then CYAN=''; GREY=''; OFF=''
+else CYAN=$'\033[36m'; GREY=$'\033[2m'; OFF=$'\033[0m'; fi
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 2 ]; then RED=''; OFF_ERR=''
+else RED=$'\033[31m'; OFF_ERR=$'\033[0m'; fi
+
+die() { printf '%s%s%s\n' "$RED"  "$*" "$OFF_ERR" >&2; exit 1; }
+say() { printf '%s%s%s\n' "$CYAN" "$*" "$OFF"; }
+dim() { printf '%s%s%s\n' "$GREY" "$*" "$OFF"; }
 
 usage() {
   cat <<'EOF'
@@ -44,6 +52,18 @@ State lives in .git/livedemo/, so nothing is ever added to your project.
 EOF
 }
 
+# --------------------------------------------------------------------- command
+
+cmd=${1:-next}
+if [ $# -gt 0 ]; then shift; fi
+
+# Answered before the repository is touched: the installer prints the version from
+# whatever directory it ran in, and asking for help should never need a repo.
+case "$cmd" in
+  version|--version|-v) echo "git-livedemo $VERSION"; exit 0 ;;
+  help|--help|-h)       usage; exit 0 ;;
+esac
+
 # ---------------------------------------------------------------- repo context
 
 git rev-parse --git-dir >/dev/null 2>&1 || die "Not inside a git repository."
@@ -54,6 +74,7 @@ cd "$ROOT"
 STATE_DIR="$GIT_DIR_ABS/livedemo"
 STATE="$STATE_DIR/state"
 CONFIG="$STATE_DIR/config"
+IGNORES="$STATE_DIR/ignores"
 mkdir -p "$STATE_DIR"
 
 # Steps come from any branch: the natural way to build a demo is to commit it up
@@ -64,17 +85,24 @@ if [ -z "$STEPS_REF" ] && [ -f "$CONFIG" ]; then
 fi
 STEPS_REF="${STEPS_REF:-steps}"
 
-# Step commits, oldest first; step N is ${STEP[N-1]}.
+# Step commits, oldest first; step N is ${STEP[N-1]}. Sha, tree and subject all come
+# out of one traversal: read separately, `use main` on a long branch forks a git
+# process per commit, on every single command.
 # A read loop rather than mapfile: macOS still ships bash 3.2.
-STEP=()
+STEP=(); TREE=(); SUBJECT=()
 if git rev-parse -q --verify "$STEPS_REF" >/dev/null 2>&1; then
-  while IFS= read -r sha; do STEP+=("$sha"); done < <(git rev-list --reverse "$STEPS_REF")
+  while IFS=' ' read -r sha tree subject; do
+    STEP+=("$sha"); TREE+=("$tree"); SUBJECT+=("$subject")
+  done < <(git log --reverse --format='%H %T %s' "$STEPS_REF")
 fi
 TOTAL=${#STEP[@]}
 
 commit_of()  { echo "${STEP[$(($1 - 1))]}"; }
-tree_of()    { git rev-parse "$(commit_of "$1")^{tree}"; }
-subject_of() { git log -1 --format=%s "$(commit_of "$1")"; }
+tree_of()    { echo "${TREE[$(($1 - 1))]}"; }
+subject_of() { echo "${SUBJECT[$(($1 - 1))]}"; }
+
+is_number()    { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+is_gitignore() { case "$1" in .gitignore|*/.gitignore) return 0 ;; esac; return 1; }
 
 require_steps() {
   [ "$TOTAL" -gt 0 ] || die "No steps yet: branch '$STEPS_REF' does not exist.
@@ -121,14 +149,85 @@ known_commit() {
   return 1
 }
 
+# The object git would record for an untracked path. A symlink stores the target it
+# points at rather than the bytes behind it, and a nested repo or an unreadable file
+# has no blob at all -- say none instead of guessing, so the caller refuses.
+worktree_blob() {
+  if [ -L "$1" ]; then
+    readlink "$1" | tr -d '\n' | git hash-object --stdin
+  elif [ -f "$1" ] && [ -r "$1" ]; then
+    git hash-object -- "$1"
+  else
+    echo none
+  fi
+}
+
+# One untracked path: prints it when the step would overwrite it with different
+# content. A function of its own because bash 3.2 cannot parse `case` inside $().
+clash_line() {
+  local f=$1 obj
+  is_gitignore "$f" && return 0   # ours across step 0, see play
+  obj=$(git rev-parse -q --verify "$2:$f" 2>/dev/null) || return 0
+  if [ "$(worktree_blob "$f")" != "$obj" ]; then printf '  %s\n' "$f"; fi
+}
+
+# read-tree leaves untracked files alone unless the step writes the same path, so
+# only a genuine clash is worth refusing over. Checked on every step, not just on
+# the first: scratch files appear mid-demo too, and those are the freshest work in
+# the repo. -z because git quotes any path that is not plain ASCII, and a quoted
+# path never matches the tree, so the clash would pass unnoticed.
+guard_untracked() {
+  local target_tree=$1 clash
+  clash=$(
+    git ls-files -z --others --exclude-standard |
+      while IFS= read -r -d '' f; do clash_line "$f" "$target_tree"; done
+  )
+  [ -z "$clash" ] || die "These untracked files would be overwritten by the step:
+$clash
+Move or commit them first."
+}
+
+# Step 0 empties the working tree -- and would take .gitignore with it, leaving every
+# ignored build directory suddenly untracked: on the projector, in the clash scan,
+# and within reach of `git add -A`. The ignore rules are yours, not the demo's, so
+# they are put back once the tree is empty. The step that owns the path takes it
+# from there, which is why clash_line never refuses over a .gitignore.
+save_ignore_files() {
+  git ls-files -s -z -- '*.gitignore' > "$IGNORES" 2>/dev/null || : > "$IGNORES"
+}
+
+restore_ignore_files() {
+  local entry path rest sha
+  while IFS= read -r -d '' entry; do
+    path=${entry#*"$TAB"}                       # mode SP sha SP stage TAB path
+    if is_gitignore "$path" && [ ! -e "$path" ]; then
+      rest=${entry#* }
+      sha=${rest%% *}
+      mkdir -p "$(dirname "$path")"
+      git cat-file blob "$sha" > "$path"
+    fi
+  done < "$IGNORES"
+  rm -f "$IGNORES"
+}
+
 # Playing rewrites the branch HEAD points at, so playback gets a branch of its own.
 # Without this, `next` rewinds whatever you were working on and deletes its files,
 # leaving the commits reachable only through the reflog.
 switch_to_play_branch() {
-  local target_tree=$1 head_ref name tip clash
+  local head_ref name origin tip
   head_ref=$(git symbolic-ref -q HEAD || echo "")
   [ "$head_ref" = "$PLAY_REF" ] && return 0
-  name=${head_ref#refs/heads/}
+
+  if [ -n "$head_ref" ]; then
+    origin=${head_ref#refs/heads/}
+    name=$origin
+  else
+    # A detached HEAD has no branch name to go back to, so remember the commit
+    # itself: otherwise `exit` falls back to main and strands it in the reflog.
+    origin=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "")
+    name="a detached HEAD"
+    [ -n "$origin" ] && name="detached HEAD ($(git rev-parse --short "$origin"))"
+  fi
 
   if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
     git diff --quiet HEAD 2>/dev/null ||
@@ -140,16 +239,6 @@ so playing would lose it. Record it first:
   git livedemo record \"Step 1: ...\""
   fi
 
-  # read-tree leaves untracked files alone unless the step writes the same path,
-  # so only a genuine clash is worth refusing over.
-  clash=$(git ls-files --others --exclude-standard | while read -r f; do
-    obj=$(git rev-parse -q --verify "$target_tree:$f" 2>/dev/null) || continue
-    [ "$(git hash-object "$f")" != "$obj" ] && echo "  $f"
-  done)
-  [ -n "$clash" ] && die "These untracked files would be overwritten by the step:
-$clash
-Move or commit them first."
-
   tip=$(git rev-parse -q --verify "$PLAY_REF" 2>/dev/null || true)
   if [ -n "$tip" ] && ! known_commit "$tip"; then
     die "Branch ${PLAY_REF#refs/heads/} carries commits that are not demo steps, and
@@ -157,8 +246,9 @@ playing would rewind them. Delete it once you have salvaged them:
   git branch -D ${PLAY_REF#refs/heads/}"
   fi
 
-  # Remembered so `exit` can put you back on the branch you came from.
-  printf '%s\n' "$name" > "$STATE_DIR/origin"
+  # Remembered so `exit` can put you back where you came from.
+  if [ -n "$origin" ]; then printf '%s\n' "$origin" > "$STATE_DIR/origin"
+  else rm -f "$STATE_DIR/origin"; fi
 
   say "Playing on '${PLAY_REF#refs/heads/}' (you were on $name)."
   dim "  'git livedemo exit' puts you back on $name."
@@ -168,23 +258,37 @@ playing would rewind them. Delete it once you have salvaged them:
 # ----------------------------------------------------------------------- moves
 
 current() {
-  # Trust the index over the state file: it survives an interrupted step.
-  local index_tree n
+  # Two steps can share a tree -- a revert, a deletion that restores an earlier
+  # state, an empty commit -- and the index alone cannot tell those apart. The state
+  # file can, so trust it while the index still agrees with it; fall back to reading
+  # the index when it does not, which is how an interrupted step heals itself.
+  local index_tree n saved
   index_tree=$(git write-tree)
+  saved=$(cat "$STATE" 2>/dev/null || echo "")
+  if is_number "$saved" && [ "$((10#$saved))" -le "$TOTAL" ]; then
+    saved=$((10#$saved))
+    if [ "$saved" -eq 0 ] && [ "$index_tree" = "$EMPTY_TREE" ]; then echo 0; return; fi
+    if [ "$saved" -ge 1 ] && [ "$(tree_of "$saved")" = "$index_tree" ]; then
+      echo "$saved"; return
+    fi
+  fi
   if [ "$index_tree" = "$EMPTY_TREE" ]; then echo 0; return; fi
   for ((n = 1; n <= TOTAL; n++)); do
     if [ "$(tree_of "$n")" = "$index_tree" ]; then echo "$n"; return; fi
   done
-  [ -f "$STATE" ] && cat "$STATE" || echo 0
+  echo 0
 }
 
 play() {
   local n=$1 target_tree
-  case "$n" in ''|*[!0-9]*) die "Step must be a number, got '$n'" ;; esac
+  is_number "$n" || die "Step must be a number, got '$n'"
+  n=$((10#$n))   # a typed 08 is step eight, not a broken octal literal
   [ "$n" -le "$TOTAL" ] || die "There are only $TOTAL steps"
 
-  target_tree=$([ "$n" -eq 0 ] && echo "$EMPTY_TREE" || tree_of "$n")
-  switch_to_play_branch "$target_tree"
+  if [ "$n" -eq 0 ]; then target_tree=$EMPTY_TREE; else target_tree=$(tree_of "$n"); fi
+
+  guard_untracked "$target_tree"
+  switch_to_play_branch
 
   # HEAD sits on the previous step so the pending diff is exactly this step.
   if [ "$n" -le 1 ]; then
@@ -193,8 +297,10 @@ play() {
     git update-ref HEAD "$(commit_of $((n - 1)))"
   fi
 
+  if [ "$n" -eq 0 ]; then save_ignore_files; fi
   # --reset rewrites tracked files and drops the ones this step does not have.
   git read-tree -u --reset "$target_tree"
+  if [ "$n" -eq 0 ]; then restore_ignore_files; fi
 
   echo "$n" > "$STATE"
   if [ "$n" -eq 0 ]; then
@@ -205,10 +311,7 @@ play() {
   fi
 }
 
-# --------------------------------------------------------------------- command
-
-cmd=${1:-next}
-[ $# -gt 0 ] && shift
+# -------------------------------------------------------------------- dispatch
 
 case "$cmd" in
   next)
@@ -231,14 +334,18 @@ case "$cmd" in
   list)
     require_steps; n=$(current)
     for ((i = 1; i <= TOTAL; i++)); do
-      [ "$i" -eq "$n" ] && printf '\033[36m->\033[0m ' || printf '   '
+      if [ "$i" -eq "$n" ]; then printf '%s->%s ' "$CYAN" "$OFF"; else printf '   '; fi
       printf '%2d  %s\n' "$i" "$(subject_of "$i")"
     done
     ;;
   use)
     branch=${1:-}
     [ -n "$branch" ] || die "usage: git livedemo use <branch>"
-    git rev-parse -q --verify "$branch" >/dev/null || die "No such branch: $branch"
+    # A branch, verified as one: rev-parse would take a tag or a raw sha just as
+    # happily, and `record` would then create refs/heads/<that> and shadow it.
+    git show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null ||
+      die "No such branch: $branch
+Steps come from a local branch you committed yourself; 'git branch' lists them."
     [ "refs/heads/$branch" = "$PLAY_REF" ] &&
       die "'$branch' is the branch playback runs on. Pick another, or set
 GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
@@ -249,9 +356,23 @@ GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
   record)
     msg=${1:-}
     [ -n "$msg" ] || die "usage: git livedemo record \"Step 1: what it adds\""
+    # Mid-playback the working tree holds a replayed step, not new work, and at step
+    # 0 it is empty on purpose. Appending either to the steps branch is never what
+    # you meant -- and after `use main` that branch is the one you work on.
+    [ "$(git symbolic-ref -q HEAD || echo "")" = "$PLAY_REF" ] &&
+      die "You are mid-playback on '${PLAY_REF#refs/heads/}', so the working tree holds a
+step rather than new work. Leave playback first, then record:
+  git livedemo exit"
+    git check-ref-format "refs/heads/$STEPS_REF" 2>/dev/null ||
+      die "'$STEPS_REF' is not a usable branch name, and record appends to a branch."
+    if ! git show-ref --verify --quiet "refs/heads/$STEPS_REF" 2>/dev/null &&
+       git rev-parse -q --verify "$STEPS_REF" >/dev/null 2>&1; then
+      die "'$STEPS_REF' is a tag or a commit, not a local branch, and record only
+appends to a branch. Pick one with: git livedemo use <branch>"
+    fi
     git add -A
     tree=$(git write-tree)
-    parent=$(git rev-parse -q --verify "$STEPS_REF" 2>/dev/null || true)
+    parent=$(git rev-parse -q --verify "refs/heads/$STEPS_REF" 2>/dev/null || true)
     if [ -n "$parent" ]; then
       new=$(git commit-tree "$tree" -p "$parent" -m "$msg")
     else
@@ -265,13 +386,11 @@ GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
     # is safe: every step is reproducible from the steps branch.
     origin=$(cat "$STATE_DIR/origin" 2>/dev/null || echo "")
     [ -n "$origin" ] || origin=${1:-main}
-    git rev-parse -q --verify "$origin" >/dev/null ||
-      die "Cannot find branch '$origin'. Leave manually with: git checkout -f <branch>"
+    git rev-parse -q --verify "$origin" >/dev/null 2>&1 ||
+      die "Cannot find '$origin'. Leave manually with: git checkout -f <branch>"
     git checkout -f -q "$origin"
     rm -f "$STATE"
     say "Back on '$origin'."
     ;;
-  version|--version|-v) echo "git-livedemo $VERSION" ;;
-  help|--help|-h)       usage ;;
   *) die "Unknown command '$cmd'. Try: git livedemo help" ;;
 esac
