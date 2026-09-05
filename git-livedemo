@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+#
+# git-livedemo -- walk a demo forward one commit at a time, so the IDE shows each
+# step as a reviewable diff instead of a silent checkout.
+#
+# Playing step N puts step N's tree into the index and the working tree while HEAD
+# stays on step N-1. `git checkout <commit>` would leave the Changes view empty;
+# this leaves step N sitting there as added files with line-level diffs.
+#
+# https://github.com/vspiewak/git-livedemo
+#
+set -euo pipefail
+
+VERSION=1.0.0
+EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+PLAY_REF="refs/heads/${GIT_LIVEDEMO_PLAY_BRANCH:-livedemo}"
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+say() { printf '\033[36m%s\033[0m\n' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+git livedemo -- step through a demo commit by commit
+
+  git livedemo use <branch>    take the steps from a branch you committed yourself
+  git livedemo next            play the next step
+  git livedemo prev            go back one step
+  git livedemo goto <n>        jump to step n (0 = empty working tree)
+  git livedemo reset           back to step 0
+  git livedemo list            show every step, marking where you are
+  git livedemo status          show where you are
+  git livedemo record "<msg>"  append the working tree as a new step
+  git livedemo exit            stop playing, back to the branch you came from
+  git livedemo version
+
+Each step is an ordinary commit. Point it at a branch you already built up with
+`use`, or grow one from the working tree with `record`.
+
+Playback happens on a branch of its own (default: livedemo), so the branch you
+work on is never rewritten. Set GIT_LIVEDEMO_PLAY_BRANCH to change it.
+
+State lives in .git/livedemo/, so nothing is ever added to your project.
+EOF
+}
+
+# ---------------------------------------------------------------- repo context
+
+git rev-parse --git-dir >/dev/null 2>&1 || die "Not inside a git repository."
+ROOT=$(git rev-parse --show-toplevel)
+GIT_DIR_ABS=$(git rev-parse --absolute-git-dir)
+cd "$ROOT"
+
+STATE_DIR="$GIT_DIR_ABS/livedemo"
+STATE="$STATE_DIR/state"
+CONFIG="$STATE_DIR/config"
+mkdir -p "$STATE_DIR"
+
+# Steps come from any branch: the natural way to build a demo is to commit it up
+# on a branch of your own, so read that rather than force a parallel history.
+STEPS_REF="${GIT_LIVEDEMO_STEPS_REF:-}"
+if [ -z "$STEPS_REF" ] && [ -f "$CONFIG" ]; then
+  STEPS_REF=$(sed -n 's/^STEPS_REF=//p' "$CONFIG" | tail -1)
+fi
+STEPS_REF="${STEPS_REF:-steps}"
+
+# Step commits, oldest first; step N is ${STEP[N-1]}.
+# A read loop rather than mapfile: macOS still ships bash 3.2.
+STEP=()
+if git rev-parse -q --verify "$STEPS_REF" >/dev/null 2>&1; then
+  while IFS= read -r sha; do STEP+=("$sha"); done < <(git rev-list --reverse "$STEPS_REF")
+fi
+TOTAL=${#STEP[@]}
+
+commit_of()  { echo "${STEP[$(($1 - 1))]}"; }
+tree_of()    { git rev-parse "$(commit_of "$1")^{tree}"; }
+subject_of() { git log -1 --format=%s "$(commit_of "$1")"; }
+
+require_steps() {
+  [ "$TOTAL" -gt 0 ] || die "No steps yet: branch '$STEPS_REF' does not exist.
+
+If the demo is already committed up on a branch, point at it:
+  git livedemo use $(git symbolic-ref -q --short HEAD 2>/dev/null || echo main)
+
+Otherwise build each step in the working tree and record it as you go:
+  git livedemo record \"Step 1: ...\""
+}
+
+# ---------------------------------------------------------------------- safety
+
+# The demo starts from an empty root commit rather than an unborn HEAD: plenty of
+# build tooling (git-commit-id, versioning plugins) fails outright when it cannot
+# resolve HEAD, which would make step 1 unbuildable.
+start_commit() {
+  local ref=refs/livedemo/start sha
+  sha=$(git rev-parse -q --verify "$ref" 2>/dev/null || true)
+  if [ -z "$sha" ]; then
+    # git knows the empty-tree hash without the object existing on disk, and jgit
+    # then fails with "Missing tree". Write it before pointing a commit at it.
+    git hash-object -t tree -w /dev/null >/dev/null
+    sha=$(git commit-tree "$EMPTY_TREE" -m "Start of the demo")
+    git update-ref "$ref" "$sha"
+  fi
+  echo "$sha"
+}
+
+# Does the index hold a state the demo can reproduce, i.e. is nothing unique staged?
+index_is_known() {
+  local t i
+  t=$(git write-tree)
+  [ "$t" = "$EMPTY_TREE" ] && return 0
+  for ((i = 1; i <= TOTAL; i++)); do [ "$(tree_of "$i")" = "$t" ] && return 0; done
+  return 1
+}
+
+# Is this commit part of the demo timeline, i.e. safe to rewind past?
+known_commit() {
+  local c=$1 i
+  [ "$c" = "$(start_commit)" ] && return 0
+  for ((i = 0; i < TOTAL; i++)); do [ "$c" = "${STEP[$i]}" ] && return 0; done
+  return 1
+}
+
+# Playing rewrites the branch HEAD points at, so playback gets a branch of its own.
+# Without this, `next` rewinds whatever you were working on and deletes its files,
+# leaving the commits reachable only through the reflog.
+switch_to_play_branch() {
+  local target_tree=$1 head_ref name tip clash
+  head_ref=$(git symbolic-ref -q HEAD || echo "")
+  [ "$head_ref" = "$PLAY_REF" ] && return 0
+  name=${head_ref#refs/heads/}
+
+  if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    git diff --quiet HEAD 2>/dev/null ||
+      die "Uncommitted changes to tracked files on $name, and playing would discard
+them. Commit or stash first."
+  elif ! index_is_known; then
+    die "Nothing is committed on $name and the staged tree is not one of the steps,
+so playing would lose it. Record it first:
+  git livedemo record \"Step 1: ...\""
+  fi
+
+  # read-tree leaves untracked files alone unless the step writes the same path,
+  # so only a genuine clash is worth refusing over.
+  clash=$(git ls-files --others --exclude-standard | while read -r f; do
+    obj=$(git rev-parse -q --verify "$target_tree:$f" 2>/dev/null) || continue
+    [ "$(git hash-object "$f")" != "$obj" ] && echo "  $f"
+  done)
+  [ -n "$clash" ] && die "These untracked files would be overwritten by the step:
+$clash
+Move or commit them first."
+
+  tip=$(git rev-parse -q --verify "$PLAY_REF" 2>/dev/null || true)
+  if [ -n "$tip" ] && ! known_commit "$tip"; then
+    die "Branch ${PLAY_REF#refs/heads/} carries commits that are not demo steps, and
+playing would rewind them. Delete it once you have salvaged them:
+  git branch -D ${PLAY_REF#refs/heads/}"
+  fi
+
+  # Remembered so `exit` can put you back on the branch you came from.
+  printf '%s\n' "$name" > "$STATE_DIR/origin"
+
+  say "Playing on '${PLAY_REF#refs/heads/}' (you were on $name)."
+  dim "  'git livedemo exit' puts you back on $name."
+  git symbolic-ref HEAD "$PLAY_REF"
+}
+
+# ----------------------------------------------------------------------- moves
+
+current() {
+  # Trust the index over the state file: it survives an interrupted step.
+  local index_tree n
+  index_tree=$(git write-tree)
+  if [ "$index_tree" = "$EMPTY_TREE" ]; then echo 0; return; fi
+  for ((n = 1; n <= TOTAL; n++)); do
+    if [ "$(tree_of "$n")" = "$index_tree" ]; then echo "$n"; return; fi
+  done
+  [ -f "$STATE" ] && cat "$STATE" || echo 0
+}
+
+play() {
+  local n=$1 target_tree
+  case "$n" in ''|*[!0-9]*) die "Step must be a number, got '$n'" ;; esac
+  [ "$n" -le "$TOTAL" ] || die "There are only $TOTAL steps"
+
+  target_tree=$([ "$n" -eq 0 ] && echo "$EMPTY_TREE" || tree_of "$n")
+  switch_to_play_branch "$target_tree"
+
+  # HEAD sits on the previous step so the pending diff is exactly this step.
+  if [ "$n" -le 1 ]; then
+    git update-ref HEAD "$(start_commit)"
+  else
+    git update-ref HEAD "$(commit_of $((n - 1)))"
+  fi
+
+  # --reset rewrites tracked files and drops the ones this step does not have.
+  git read-tree -u --reset "$target_tree"
+
+  echo "$n" > "$STATE"
+  if [ "$n" -eq 0 ]; then
+    say "Step 0/$TOTAL - empty working tree"
+  else
+    say "Step $n/$TOTAL - $(subject_of "$n")"
+    dim "  $(git diff --cached --shortstat | sed 's/^ *//')"
+  fi
+}
+
+# --------------------------------------------------------------------- command
+
+cmd=${1:-next}
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+  next)
+    require_steps; n=$(current)
+    [ "$n" -lt "$TOTAL" ] || die "Already at the last step ($TOTAL)"
+    play $((n + 1))
+    ;;
+  prev)
+    require_steps; n=$(current)
+    [ "$n" -gt 0 ] || die "Already at step 0"
+    play $((n - 1))
+    ;;
+  goto)  require_steps; play "${1:-}" ;;
+  reset) require_steps; play 0 ;;
+  status)
+    require_steps; n=$(current)
+    if [ "$n" -eq 0 ]; then say "Step 0/$TOTAL - empty working tree"
+    else say "Step $n/$TOTAL - $(subject_of "$n")"; fi
+    ;;
+  list)
+    require_steps; n=$(current)
+    for ((i = 1; i <= TOTAL; i++)); do
+      [ "$i" -eq "$n" ] && printf '\033[36m->\033[0m ' || printf '   '
+      printf '%2d  %s\n' "$i" "$(subject_of "$i")"
+    done
+    ;;
+  use)
+    branch=${1:-}
+    [ -n "$branch" ] || die "usage: git livedemo use <branch>"
+    git rev-parse -q --verify "$branch" >/dev/null || die "No such branch: $branch"
+    [ "refs/heads/$branch" = "$PLAY_REF" ] &&
+      die "'$branch' is the branch playback runs on. Pick another, or set
+GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
+    printf 'STEPS_REF=%s\n' "$branch" > "$CONFIG"
+    say "Steps now come from '$branch' ($(git rev-list --count "$branch") commits)."
+    dim "  git livedemo list"
+    ;;
+  record)
+    msg=${1:-}
+    [ -n "$msg" ] || die "usage: git livedemo record \"Step 1: what it adds\""
+    git add -A
+    tree=$(git write-tree)
+    parent=$(git rev-parse -q --verify "$STEPS_REF" 2>/dev/null || true)
+    if [ -n "$parent" ]; then
+      new=$(git commit-tree "$tree" -p "$parent" -m "$msg")
+    else
+      new=$(git commit-tree "$tree" -m "$msg")
+    fi
+    git update-ref "refs/heads/$STEPS_REF" "$new"
+    say "Recorded step $((TOTAL + 1)) on '$STEPS_REF': $msg"
+    ;;
+  exit|stop)
+    # A played step lives in the index, so a plain checkout refuses. Discarding it
+    # is safe: every step is reproducible from the steps branch.
+    origin=$(cat "$STATE_DIR/origin" 2>/dev/null || echo "")
+    [ -n "$origin" ] || origin=${1:-main}
+    git rev-parse -q --verify "$origin" >/dev/null ||
+      die "Cannot find branch '$origin'. Leave manually with: git checkout -f <branch>"
+    git checkout -f -q "$origin"
+    rm -f "$STATE"
+    say "Back on '$origin'."
+    ;;
+  version|--version|-v) echo "git-livedemo $VERSION" ;;
+  help|--help|-h)       usage ;;
+  *) die "Unknown command '$cmd'. Try: git livedemo help" ;;
+esac

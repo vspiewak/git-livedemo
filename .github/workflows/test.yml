@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          bash -n git-livedemo
+          bash -n test/test.sh
+          sh -n install.sh
+      - name: ShellCheck
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -S warning git-livedemo install.sh
+      - name: Tests
+        run: ./test/test.sh
+      - name: Install from the clone
+        run: |
+          GIT_LIVEDEMO_PREFIX="$HOME/bin" ./install.sh
+          "$HOME/bin/git-livedemo" version
