@@ -116,22 +116,6 @@ Otherwise build each step in the working tree and record it as you go:
 
 # ---------------------------------------------------------------------- safety
 
-# The demo starts from an empty root commit rather than an unborn HEAD: plenty of
-# build tooling (git-commit-id, versioning plugins) fails outright when it cannot
-# resolve HEAD, which would make step 1 unbuildable.
-start_commit() {
-  local ref=refs/livedemo/start sha
-  sha=$(git rev-parse -q --verify "$ref" 2>/dev/null || true)
-  if [ -z "$sha" ]; then
-    # git knows the empty-tree hash without the object existing on disk, and jgit
-    # then fails with "Missing tree". Write it before pointing a commit at it.
-    git hash-object -t tree -w /dev/null >/dev/null
-    sha=$(git commit-tree "$EMPTY_TREE" -m "Start of the demo")
-    git update-ref "$ref" "$sha"
-  fi
-  echo "$sha"
-}
-
 # Does the index hold a state the demo can reproduce, i.e. is nothing unique staged?
 index_is_known() {
   local t i
@@ -144,7 +128,6 @@ index_is_known() {
 # Is this commit part of the demo timeline, i.e. safe to rewind past?
 known_commit() {
   local c=$1 i
-  [ "$c" = "$(start_commit)" ] && return 0
   for ((i = 0; i < TOTAL; i++)); do [ "$c" = "${STEP[$i]}" ] && return 0; done
   return 1
 }
@@ -291,8 +274,10 @@ play() {
   switch_to_play_branch
 
   # HEAD sits on the previous step so the pending diff is exactly this step.
+  # Step 1 has no previous step, so HEAD goes unborn and the whole tree reads as
+  # added -- which is what it is.
   if [ "$n" -le 1 ]; then
-    git update-ref HEAD "$(start_commit)"
+    git update-ref -d HEAD 2>/dev/null || true
   else
     git update-ref HEAD "$(commit_of $((n - 1)))"
   fi

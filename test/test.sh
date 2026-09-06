@@ -45,7 +45,7 @@ check "reset keeps ignored dir" "$([ -f target/out.jar ] && echo yes)" "yes"
 "$BIN" next >/dev/null
 check "step 1 file present"     "$(cat a.txt)" "a"
 grep_ok "step 1 is staged as an addition" "$(git status --short)" "^A  a.txt"
-check "HEAD is the empty root"  "$(git log -1 --format=%s)" "Start of the demo"
+check "step 1 leaves HEAD unborn" "$(git rev-parse -q --verify HEAD >/dev/null 2>&1 && echo born || echo unborn)" "unborn"
 
 "$BIN" next >/dev/null
 grep_ok "step 2 shows a modification" "$(git status --short)" "^M  a.txt"

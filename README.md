@@ -150,9 +150,9 @@ A  src/main/java/com/example/Controller.java
 M  pom.xml
 ```
 
-Step 1 is diffed against an empty root commit rather than an unborn `HEAD` — build tooling
-that reads git metadata (`git-commit-id` and friends) fails outright when `HEAD` will not
-resolve, and a demo whose first step cannot build is not much of a demo.
+Step 1 has no previous step, so `HEAD` is left unborn and the whole tree reads as added.
+Build tooling that insists on resolving `HEAD` (some versioning plugins) will not run at
+step 1 for that reason; every later step has a real commit behind it.
 
 ## It will not eat your work
 
