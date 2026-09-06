@@ -9,21 +9,21 @@ BIN="$REPO/git-livedemo"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
+ESC=$(printf '\033')
 
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n     %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
+skip() { printf '  \033[2mskip\033[0m %s\n' "$1"; }
 check(){ [ "$2" = "$3" ] && ok "$1" || bad "$1" "expected [$3], got [$2]"; }
-ESC=$(printf '\033')
-
 grep_ok(){ printf '%s' "$2" | grep -q "$3" && ok "$1" || bad "$1" "missing [$3] in [$2]"; }
 
-# A repo with three steps committed on main, plus an ignored build dir.
 repo() { local d="$TMP/$1"; rm -rf "$d"; mkdir -p "$d"; cd "$d" || exit 1
          git init -qb main; git config user.email t@t; git config user.name t; }
 
 # Everything in the current directory bar the ignored build dir.
 visible() { local f n=0; for f in *; do [ "$f" = target ] || [ ! -e "$f" ] || n=$((n + 1)); done; echo "$n"; }
 
+# A repo with three steps committed on main, plus an ignored build dir.
 fixture() {
   repo "$1"
   printf 'target/\n' > .gitignore
@@ -40,7 +40,6 @@ fixture basic
 check "lists every step"        "$("$BIN" list | wc -l | tr -d ' ')" "3"
 "$BIN" reset >/dev/null
 check "reset empties the tree"  "$(visible)" "0"
-check "piped output carries no colour" "$("$BIN" list | grep -c "$ESC" || true)" "0"
 check "reset keeps ignored dir" "$([ -f target/out.jar ] && echo yes)" "yes"
 
 "$BIN" next >/dev/null
@@ -66,6 +65,9 @@ a=$(git status --short); "$BIN" goto 1 >/dev/null; b=$(git status --short)
 check "goto is idempotent"      "$a" "$b"
 grep_ok "goto rejects nonsense" "$("$BIN" goto xyz 2>&1)" "must be a number"
 grep_ok "goto rejects overflow" "$("$BIN" goto 99 2>&1)" "only 3 steps"
+
+# Redirected output has to stay plain: escape codes wreck logs, greps and task panes.
+check "piped output carries no colour" "$("$BIN" list | grep -c "$ESC" || true)" "0"
 
 # A step number is decimal, whatever leading zeros it was typed with.
 "$BIN" goto 02 >/dev/null
@@ -136,6 +138,12 @@ ln -s a.txt link
 check "a matching symlink is not a clash" "$?" "0"
 check "the symlink is the step's" "$(readlink link)" "a.txt"
 
+fixture guard_foreign
+"$BIN" goto 1 >/dev/null 2>&1
+echo stray > stray.txt; git add -A; git commit -qm "committed mid-demo"
+git checkout -q main
+grep_ok "refuses to rewind a foreign commit" "$("$BIN" goto 2 2>&1)" "not demo steps"
+
 # Step 0 wipes the tree, but the ignore rules are the presenter's, not the demo's.
 fixture ignored
 "$BIN" reset >/dev/null
@@ -144,7 +152,7 @@ check "step 0 keeps target/ ignored"   "$(git status --short | grep -c target ||
 "$BIN" next >/dev/null
 grep_ok "the step takes .gitignore back" "$(git status --short)" "^A  .gitignore"
 
-# Mid-playback the tree is a replayed step, so record must not append it.
+# record appends new work; mid-playback there is none, only a replayed step.
 fixture record_guard
 "$BIN" goto 1 >/dev/null
 grep_ok "record refuses mid-playback" "$("$BIN" record "nope" 2>&1)" "mid-playback"
@@ -155,20 +163,6 @@ fixture use_tag
 git tag v1 main
 grep_ok "use rejects a tag" "$("$BIN" use v1 2>&1)" "No such branch"
 check "steps still come from main" "$("$BIN" status)" "Step 3/3 - Step three"
-
-# A detached HEAD has no branch name, so exit must remember the commit.
-fixture detached
-git checkout -q --detach main~1
-sha=$(git rev-parse --short HEAD)
-grep_ok "names the detached HEAD" "$("$BIN" goto 1 2>&1)" "detached HEAD ($sha)"
-"$BIN" exit >/dev/null
-check "exit returns to the detached commit" "$(git rev-parse --short HEAD)" "$sha"
-
-fixture guard_foreign
-"$BIN" goto 1 >/dev/null 2>&1
-echo stray > stray.txt; git add -A; git commit -qm "committed mid-demo"
-git checkout -q main
-grep_ok "refuses to rewind a foreign commit" "$("$BIN" goto 2 2>&1)" "not demo steps"
 
 # Two steps can share a tree; the index alone cannot tell them apart.
 repo revert
@@ -190,6 +184,14 @@ echo a > a.txt; git add -A; git commit -qm "Step two"
 check "an empty first step holds"  "$("$BIN" status)" "Step 1/2 - Step one"
 "$BIN" next >/dev/null
 check "and next moves past it"     "$("$BIN" status)" "Step 2/2 - Step two"
+
+# Detached HEAD has no branch name; exit still has to land where you started.
+fixture detached
+git checkout -q --detach main~1
+was=$(git rev-parse HEAD)
+grep_ok "names the detached HEAD" "$("$BIN" goto 2 2>&1)" "detached HEAD"
+"$BIN" exit >/dev/null
+check "exit returns to the detached commit" "$(git rev-parse HEAD)" "$was"
 
 # A repo with no commits at all
 repo fresh
