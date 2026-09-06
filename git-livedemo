@@ -83,17 +83,21 @@ if [ -z "$STEPS_REF" ] && [ -f "$CONFIG" ]; then
 fi
 STEPS_REF="${STEPS_REF:-steps}"
 
-# Step commits, oldest first; step N is ${STEP[N-1]}.
+# Step commits, oldest first; step N is ${STEP[N-1]}. Sha, tree and subject all come
+# out of one traversal: read separately, `use main` on a long branch forks a git
+# process per commit, on every single command.
 # A read loop rather than mapfile: macOS still ships bash 3.2.
-STEP=()
+STEP=(); TREE=(); SUBJECT=()
 if git rev-parse -q --verify "$STEPS_REF" >/dev/null 2>&1; then
-  while IFS= read -r sha; do STEP+=("$sha"); done < <(git rev-list --reverse "$STEPS_REF")
+  while IFS=' ' read -r sha tree subject; do
+    STEP+=("$sha"); TREE+=("$tree"); SUBJECT+=("$subject")
+  done < <(git log --reverse --format='%H %T %s' "$STEPS_REF")
 fi
 TOTAL=${#STEP[@]}
 
 commit_of()  { echo "${STEP[$(($1 - 1))]}"; }
-tree_of()    { git rev-parse "$(commit_of "$1")^{tree}"; }
-subject_of() { git log -1 --format=%s "$(commit_of "$1")"; }
+tree_of()    { echo "${TREE[$(($1 - 1))]}"; }
+subject_of() { echo "${SUBJECT[$(($1 - 1))]}"; }
 
 require_steps() {
   [ "$TOTAL" -gt 0 ] || die "No steps yet: branch '$STEPS_REF' does not exist.
