@@ -104,6 +104,27 @@ echo stray > stray.txt; git add -A; git commit -qm "committed mid-demo"
 git checkout -q main
 grep_ok "refuses to rewind a foreign commit" "$("$BIN" goto 2 2>&1)" "not demo steps"
 
+# Two steps can share a tree; the index alone cannot tell them apart.
+repo revert
+echo a > a.txt;          git add -A; git commit -qm "Step one"
+echo b > b.txt;          git add -A; git commit -qm "Step two"
+rm b.txt;                git add -A; git commit -qm "Step three"
+echo c > c.txt;          git add -A; git commit -qm "Step four"
+"$BIN" use main >/dev/null
+"$BIN" goto 3 >/dev/null
+check "a repeated tree keeps its place" "$("$BIN" status)" "Step 3/4 - Step three"
+"$BIN" next >/dev/null
+check "next moves past a repeated tree" "$("$BIN" status)" "Step 4/4 - Step four"
+
+repo empty_first
+git commit -q --allow-empty -m "Step one"
+echo a > a.txt; git add -A; git commit -qm "Step two"
+"$BIN" use main >/dev/null
+"$BIN" goto 1 >/dev/null
+check "an empty first step holds"  "$("$BIN" status)" "Step 1/2 - Step one"
+"$BIN" next >/dev/null
+check "and next moves past it"     "$("$BIN" status)" "Step 2/2 - Step two"
+
 # A repo with no commits at all
 d="$TMP/fresh"; mkdir -p "$d"; cd "$d"; git init -qb main
 git config user.email t@t; git config user.name t

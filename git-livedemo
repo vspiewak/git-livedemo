@@ -193,14 +193,25 @@ playing would rewind them. Delete it once you have salvaged them:
 # ----------------------------------------------------------------------- moves
 
 current() {
-  # Trust the index over the state file: it survives an interrupted step.
-  local index_tree n
+  # Two steps can share a tree -- a revert, a deletion that restores an earlier
+  # state, an empty commit -- and the index alone cannot tell those apart. The state
+  # file can, so trust it while the index still agrees with it; fall back to reading
+  # the index when it does not, which is how an interrupted step heals itself.
+  local index_tree n saved
   index_tree=$(git write-tree)
+  saved=$(cat "$STATE" 2>/dev/null || echo "")
+  if is_number "$saved" && [ "$((10#$saved))" -le "$TOTAL" ]; then
+    saved=$((10#$saved))
+    if [ "$saved" -eq 0 ] && [ "$index_tree" = "$EMPTY_TREE" ]; then echo 0; return; fi
+    if [ "$saved" -ge 1 ] && [ "$(tree_of "$saved")" = "$index_tree" ]; then
+      echo "$saved"; return
+    fi
+  fi
   if [ "$index_tree" = "$EMPTY_TREE" ]; then echo 0; return; fi
   for ((n = 1; n <= TOTAL; n++)); do
     if [ "$(tree_of "$n")" = "$index_tree" ]; then echo "$n"; return; fi
   done
-  [ -f "$STATE" ] && cat "$STATE" || echo 0
+  echo 0
 }
 
 play() {
