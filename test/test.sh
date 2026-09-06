@@ -4,7 +4,8 @@
 #
 set -uo pipefail
 
-BIN=$(cd "$(dirname "$0")/.." && pwd)/git-livedemo
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+BIN="$REPO/git-livedemo"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
@@ -12,13 +13,19 @@ PASS=0; FAIL=0
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n     %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
 check(){ [ "$2" = "$3" ] && ok "$1" || bad "$1" "expected [$3], got [$2]"; }
+ESC=$(printf '\033')
+
 grep_ok(){ printf '%s' "$2" | grep -q "$3" && ok "$1" || bad "$1" "missing [$3] in [$2]"; }
 
 # A repo with three steps committed on main, plus an ignored build dir.
+repo() { local d="$TMP/$1"; rm -rf "$d"; mkdir -p "$d"; cd "$d" || exit 1
+         git init -qb main; git config user.email t@t; git config user.name t; }
+
+# Everything in the current directory bar the ignored build dir.
+visible() { local f n=0; for f in *; do [ "$f" = target ] || [ ! -e "$f" ] || n=$((n + 1)); done; echo "$n"; }
+
 fixture() {
-  local d="$TMP/$1"; rm -rf "$d"; mkdir -p "$d"; cd "$d"
-  git init -qb main
-  git config user.email t@t; git config user.name t
+  repo "$1"
   printf 'target/\n' > .gitignore
   mkdir -p target && echo junk > target/out.jar
   echo a > a.txt;                     git add -A; git commit -qm "Step one"
@@ -32,7 +39,7 @@ echo "git-livedemo tests"
 fixture basic
 check "lists every step"        "$("$BIN" list | wc -l | tr -d ' ')" "3"
 "$BIN" reset >/dev/null
-check "reset empties the tree"  "$(ls | grep -v target | wc -l | tr -d ' ')" "0"
+check "reset empties the tree"  "$(visible)" "0"
 check "reset keeps ignored dir" "$([ -f target/out.jar ] && echo yes)" "yes"
 
 "$BIN" next >/dev/null
