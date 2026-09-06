@@ -200,9 +200,9 @@ detached `HEAD`, and a repository with no commits at all.
 Walking a talk through a chain of commits is not a new idea, and if the tools below fit
 your demo better, use them.
 
-| | |
+| tool | what advancing a step does |
 |---|---|
-| [qrichert/git-slides](https://github.com/qrichert/git-slides), [gelisam/git-slides](https://github.com/gelisam/git-slides), [git-step](https://github.com/jdjfisher/git-step) | check out each commit: the files are right, and the Changes view is empty |
+| [git-slides](https://github.com/gelisam/git-slides) | checks out each commit: the files are right, and the Changes view is empty |
 | [gitlogue](https://github.com/unhappychoice/gitlogue) | replays commits as an animation in the terminal; your editor is not involved |
 | [CodeTour](https://github.com/microsoft/codetour) | hand-authored waypoints in the editor, not the diffs your commits already contain |
 | `git-livedemo` | leaves `HEAD` one step behind, so the step arrives as pending changes in the IDE |
