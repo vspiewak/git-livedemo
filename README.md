@@ -14,6 +14,11 @@
 
 ---
 
+<p align="center">
+  <img src="docs/demo.gif" width="900"
+       alt="git checkout leaves the Changes view empty; git livedemo next lands each step in it as pending changes">
+</p>
+
 You are presenting. You built the project up as a clean chain of commits, and you want to
 walk the room through it — one commit per slide, the diff on screen, the code running at
 every stop.
@@ -37,29 +42,6 @@ $ git livedemo next
 Step 2/7 - Add the HTTP endpoint
   3 files changed, 87 insertions(+), 2 deletions(-)
 ```
-
-<table>
-<tr><th align="left"><code>git checkout &lt;commit&gt;</code></th><th align="left"><code>git livedemo next</code></th></tr>
-<tr valign="top"><td>
-
-```
-Changes
-
-  (nothing to show)
-```
-
-</td><td>
-
-```
-Changes
-
-  A  src/main/java/…/Controller.java   +54
-  A  src/test/java/…/ControllerTest.java  +31
-  M  pom.xml                            +2 -2
-```
-
-</td></tr>
-</table>
 
 ## Install
 
