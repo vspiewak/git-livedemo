@@ -195,6 +195,22 @@ step; one that does not compile is a step you cannot demo.
 directory, quoted and space-edged filenames, symlinks, two steps sharing a tree, a
 detached `HEAD`, and a repository with no commits at all.
 
+## How it compares
+
+Walking a talk through a chain of commits is not a new idea, and if the tools below fit
+your demo better, use them.
+
+| | |
+|---|---|
+| [qrichert/git-slides](https://github.com/qrichert/git-slides), [gelisam/git-slides](https://github.com/gelisam/git-slides), [git-step](https://github.com/jdjfisher/git-step) | check out each commit: the files are right, and the Changes view is empty |
+| [gitlogue](https://github.com/unhappychoice/gitlogue) | replays commits as an animation in the terminal; your editor is not involved |
+| [CodeTour](https://github.com/microsoft/codetour) | hand-authored waypoints in the editor, not the diffs your commits already contain |
+| `git-livedemo` | leaves `HEAD` one step behind, so the step arrives as pending changes in the IDE |
+
+The difference is the last row. Everything else here moves `HEAD` to the commit you want
+to show, which is correct and leaves nothing to point at. If your demo lives in the
+terminal, one of the others is the better tool.
+
 ## License
 
 MIT © Vincent Spiewak
