@@ -102,7 +102,7 @@ alias next='git livedemo next'
 
 ## Commands
 
-| | |
+| command | what it does |
 |---|---|
 | `git livedemo use <branch>` | take the steps from a branch you committed yourself |
 | `git livedemo next` / `prev` | move one step |
@@ -178,7 +178,7 @@ step; one that does not compile is a step you cannot demo.
 
 ## Configuration
 
-| variable | default | |
+| variable | default | what it changes |
 |---|---|---|
 | `GIT_LIVEDEMO_PLAY_BRANCH` | `livedemo` | branch playback runs on |
 | `GIT_LIVEDEMO_STEPS_REF` | `steps` | steps branch, overriding `use` for one command |
