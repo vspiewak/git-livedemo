@@ -156,6 +156,14 @@ git tag v1 main
 grep_ok "use rejects a tag" "$("$BIN" use v1 2>&1)" "No such branch"
 check "steps still come from main" "$("$BIN" status)" "Step 3/3 - Step three"
 
+# A detached HEAD has no branch name, so exit must remember the commit.
+fixture detached
+git checkout -q --detach main~1
+sha=$(git rev-parse --short HEAD)
+grep_ok "names the detached HEAD" "$("$BIN" goto 1 2>&1)" "detached HEAD ($sha)"
+"$BIN" exit >/dev/null
+check "exit returns to the detached commit" "$(git rev-parse --short HEAD)" "$sha"
+
 fixture guard_foreign
 "$BIN" goto 1 >/dev/null 2>&1
 echo stray > stray.txt; git add -A; git commit -qm "committed mid-demo"

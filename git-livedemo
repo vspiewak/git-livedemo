@@ -214,10 +214,20 @@ restore_ignore_files() {
 # Without this, `next` rewinds whatever you were working on and deletes its files,
 # leaving the commits reachable only through the reflog.
 switch_to_play_branch() {
-  local head_ref name tip
+  local head_ref name origin tip
   head_ref=$(git symbolic-ref -q HEAD || echo "")
   [ "$head_ref" = "$PLAY_REF" ] && return 0
-  name=${head_ref#refs/heads/}
+
+  if [ -n "$head_ref" ]; then
+    origin=${head_ref#refs/heads/}
+    name=$origin
+  else
+    # A detached HEAD has no branch name to go back to, so remember the commit
+    # itself: otherwise `exit` falls back to main and strands it in the reflog.
+    origin=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "")
+    name="a detached HEAD"
+    [ -n "$origin" ] && name="detached HEAD ($(git rev-parse --short "$origin"))"
+  fi
 
   if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
     git diff --quiet HEAD 2>/dev/null ||
@@ -236,8 +246,9 @@ playing would rewind them. Delete it once you have salvaged them:
   git branch -D ${PLAY_REF#refs/heads/}"
   fi
 
-  # Remembered so `exit` can put you back on the branch you came from.
-  printf '%s\n' "$name" > "$STATE_DIR/origin"
+  # Remembered so `exit` can put you back where you came from.
+  if [ -n "$origin" ]; then printf '%s\n' "$origin" > "$STATE_DIR/origin"
+  else rm -f "$STATE_DIR/origin"; fi
 
   say "Playing on '${PLAY_REF#refs/heads/}' (you were on $name)."
   dim "  'git livedemo exit' puts you back on $name."
@@ -375,8 +386,8 @@ appends to a branch. Pick one with: git livedemo use <branch>"
     # is safe: every step is reproducible from the steps branch.
     origin=$(cat "$STATE_DIR/origin" 2>/dev/null || echo "")
     [ -n "$origin" ] || origin=${1:-main}
-    git rev-parse -q --verify "$origin" >/dev/null ||
-      die "Cannot find branch '$origin'. Leave manually with: git checkout -f <branch>"
+    git rev-parse -q --verify "$origin" >/dev/null 2>&1 ||
+      die "Cannot find '$origin'. Leave manually with: git checkout -f <branch>"
     git checkout -f -q "$origin"
     rm -f "$STATE"
     say "Back on '$origin'."
