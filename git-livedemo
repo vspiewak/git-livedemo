@@ -99,6 +99,8 @@ commit_of()  { echo "${STEP[$(($1 - 1))]}"; }
 tree_of()    { echo "${TREE[$(($1 - 1))]}"; }
 subject_of() { echo "${SUBJECT[$(($1 - 1))]}"; }
 
+is_number()    { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+
 require_steps() {
   [ "$TOTAL" -gt 0 ] || die "No steps yet: branch '$STEPS_REF' does not exist.
 
@@ -203,7 +205,8 @@ current() {
 
 play() {
   local n=$1 target_tree
-  case "$n" in ''|*[!0-9]*) die "Step must be a number, got '$n'" ;; esac
+  is_number "$n" || die "Step must be a number, got '$n'"
+  n=$((10#$n))   # a typed 08 is step eight, not a broken octal literal
   [ "$n" -le "$TOTAL" ] || die "There are only $TOTAL steps"
 
   target_tree=$([ "$n" -eq 0 ] && echo "$EMPTY_TREE" || tree_of "$n")

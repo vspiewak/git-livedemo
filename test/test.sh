@@ -67,6 +67,13 @@ check "goto is idempotent"      "$a" "$b"
 grep_ok "goto rejects nonsense" "$("$BIN" goto xyz 2>&1)" "must be a number"
 grep_ok "goto rejects overflow" "$("$BIN" goto 99 2>&1)" "only 3 steps"
 
+# A step number is decimal, whatever leading zeros it was typed with.
+"$BIN" goto 02 >/dev/null
+check "a leading zero stays decimal" "$("$BIN" status)" "Step 2/3 - Step two"
+grep_ok "09 is nine, not a bad octal" "$("$BIN" goto 09 2>&1)" "only 3 steps"
+"$BIN" goto 01 >/dev/null
+check "01 is step one"          "$("$BIN" status)" "Step 1/3 - Step one"
+
 check "play branch is used"     "$(git branch --show-current)" "livedemo"
 check "source branch untouched" "$(git log --oneline main | wc -l | tr -d ' ')" "3"
 grep_ok "plain checkout is refused mid-step" "$(git checkout main 2>&1)" "would be overwritten"
