@@ -192,8 +192,7 @@ check "an empty first step holds"  "$("$BIN" status)" "Step 1/2 - Step one"
 check "and next moves past it"     "$("$BIN" status)" "Step 2/2 - Step two"
 
 # A repo with no commits at all
-d="$TMP/fresh"; mkdir -p "$d"; cd "$d"; git init -qb main
-git config user.email t@t; git config user.name t
+repo fresh
 grep_ok "no steps explains both options" "$("$BIN" list 2>&1)" "git livedemo use"
 echo x > x.txt; "$BIN" record "Recorded one" >/dev/null
 echo y > y.txt; "$BIN" record "Recorded two" >/dev/null
@@ -203,9 +202,18 @@ check "state stays out of the tree"    "$(git ls-files | grep -c livedemo || tru
 check "state lives under .git"         "$([ -f .git/livedemo/state ] && echo yes)" "yes"
 
 # Outside a repo: the installer prints the version from wherever it ran.
-cd "$TMP"
+outside="$TMP/outside"; mkdir -p "$outside"; cd "$outside" || exit 1
 grep_ok "version works outside a repo" "$("$BIN" version 2>&1)" "^git-livedemo "
 grep_ok "help works outside a repo"    "$("$BIN" help 2>&1)" "step through a demo"
+
+noperm="$TMP/noperm"; mkdir -p "$noperm"; chmod 555 "$noperm"
+if [ "$(id -u)" = 0 ]; then
+  skip "install refuses a non-writable prefix (running as root)"
+else
+  out=$(cd "$REPO" && GIT_LIVEDEMO_PREFIX="$noperm" sh ./install.sh 2>&1)
+  grep_ok "install refuses a non-writable prefix" "$out" "not writable"
+fi
+chmod 755 "$noperm"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
