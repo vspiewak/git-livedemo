@@ -330,7 +330,11 @@ case "$cmd" in
   use)
     branch=${1:-}
     [ -n "$branch" ] || die "usage: git livedemo use <branch>"
-    git rev-parse -q --verify "$branch" >/dev/null || die "No such branch: $branch"
+    # A branch, verified as one: rev-parse would take a tag or a raw sha just as
+    # happily, and `record` would then create refs/heads/<that> and shadow it.
+    git show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null ||
+      die "No such branch: $branch
+Steps come from a local branch you committed yourself; 'git branch' lists them."
     [ "refs/heads/$branch" = "$PLAY_REF" ] &&
       die "'$branch' is the branch playback runs on. Pick another, or set
 GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
@@ -341,9 +345,23 @@ GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
   record)
     msg=${1:-}
     [ -n "$msg" ] || die "usage: git livedemo record \"Step 1: what it adds\""
+    # Mid-playback the working tree holds a replayed step, not new work, and at step
+    # 0 it is empty on purpose. Appending either to the steps branch is never what
+    # you meant -- and after `use main` that branch is the one you work on.
+    [ "$(git symbolic-ref -q HEAD || echo "")" = "$PLAY_REF" ] &&
+      die "You are mid-playback on '${PLAY_REF#refs/heads/}', so the working tree holds a
+step rather than new work. Leave playback first, then record:
+  git livedemo exit"
+    git check-ref-format "refs/heads/$STEPS_REF" 2>/dev/null ||
+      die "'$STEPS_REF' is not a usable branch name, and record appends to a branch."
+    if ! git show-ref --verify --quiet "refs/heads/$STEPS_REF" 2>/dev/null &&
+       git rev-parse -q --verify "$STEPS_REF" >/dev/null 2>&1; then
+      die "'$STEPS_REF' is a tag or a commit, not a local branch, and record only
+appends to a branch. Pick one with: git livedemo use <branch>"
+    fi
     git add -A
     tree=$(git write-tree)
-    parent=$(git rev-parse -q --verify "$STEPS_REF" 2>/dev/null || true)
+    parent=$(git rev-parse -q --verify "refs/heads/$STEPS_REF" 2>/dev/null || true)
     if [ -n "$parent" ]; then
       new=$(git commit-tree "$tree" -p "$parent" -m "$msg")
     else

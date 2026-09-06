@@ -144,6 +144,18 @@ check "step 0 keeps target/ ignored"   "$(git status --short | grep -c target ||
 "$BIN" next >/dev/null
 grep_ok "the step takes .gitignore back" "$(git status --short)" "^A  .gitignore"
 
+# Mid-playback the tree is a replayed step, so record must not append it.
+fixture record_guard
+"$BIN" goto 1 >/dev/null
+grep_ok "record refuses mid-playback" "$("$BIN" record "nope" 2>&1)" "mid-playback"
+check "the steps branch is untouched" "$(git log --oneline main | wc -l | tr -d ' ')" "3"
+
+# use takes a branch: a tag would become refs/heads/<tag> the moment record ran.
+fixture use_tag
+git tag v1 main
+grep_ok "use rejects a tag" "$("$BIN" use v1 2>&1)" "No such branch"
+check "steps still come from main" "$("$BIN" status)" "Step 3/3 - Step three"
+
 fixture guard_foreign
 "$BIN" goto 1 >/dev/null 2>&1
 echo stray > stray.txt; git add -A; git commit -qm "committed mid-demo"
