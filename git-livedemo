@@ -15,9 +15,16 @@ VERSION=1.0.0
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 PLAY_REF="refs/heads/${GIT_LIVEDEMO_PLAY_BRANCH:-livedemo}"
 
-die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
-say() { printf '\033[36m%s\033[0m\n' "$*"; }
-dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+# Colour belongs to terminals: piped or redirected output has to stay plain, or it
+# lands as escape noise in logs, greps and IDE task panes. NO_COLOR turns it off.
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then CYAN=''; GREY=''; OFF=''
+else CYAN=$'\033[36m'; GREY=$'\033[2m'; OFF=$'\033[0m'; fi
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 2 ]; then RED=''; OFF_ERR=''
+else RED=$'\033[31m'; OFF_ERR=$'\033[0m'; fi
+
+die() { printf '%s%s%s\n' "$RED"  "$*" "$OFF_ERR" >&2; exit 1; }
+say() { printf '%s%s%s\n' "$CYAN" "$*" "$OFF"; }
+dim() { printf '%s%s%s\n' "$GREY" "$*" "$OFF"; }
 
 usage() {
   cat <<'EOF'
@@ -43,6 +50,18 @@ work on is never rewritten. Set GIT_LIVEDEMO_PLAY_BRANCH to change it.
 State lives in .git/livedemo/, so nothing is ever added to your project.
 EOF
 }
+
+# --------------------------------------------------------------------- command
+
+cmd=${1:-next}
+if [ $# -gt 0 ]; then shift; fi
+
+# Answered before the repository is touched: the installer prints the version from
+# whatever directory it ran in, and asking for help should never need a repo.
+case "$cmd" in
+  version|--version|-v) echo "git-livedemo $VERSION"; exit 0 ;;
+  help|--help|-h)       usage; exit 0 ;;
+esac
 
 # ---------------------------------------------------------------- repo context
 
@@ -205,10 +224,7 @@ play() {
   fi
 }
 
-# --------------------------------------------------------------------- command
-
-cmd=${1:-next}
-[ $# -gt 0 ] && shift
+# -------------------------------------------------------------------- dispatch
 
 case "$cmd" in
   next)
@@ -231,7 +247,7 @@ case "$cmd" in
   list)
     require_steps; n=$(current)
     for ((i = 1; i <= TOTAL; i++)); do
-      [ "$i" -eq "$n" ] && printf '\033[36m->\033[0m ' || printf '   '
+      if [ "$i" -eq "$n" ]; then printf '%s->%s ' "$CYAN" "$OFF"; else printf '   '; fi
       printf '%2d  %s\n' "$i" "$(subject_of "$i")"
     done
     ;;
@@ -271,7 +287,5 @@ GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
     rm -f "$STATE"
     say "Back on '$origin'."
     ;;
-  version|--version|-v) echo "git-livedemo $VERSION" ;;
-  help|--help|-h)       usage ;;
   *) die "Unknown command '$cmd'. Try: git livedemo help" ;;
 esac

@@ -40,6 +40,7 @@ fixture basic
 check "lists every step"        "$("$BIN" list | wc -l | tr -d ' ')" "3"
 "$BIN" reset >/dev/null
 check "reset empties the tree"  "$(visible)" "0"
+check "piped output carries no colour" "$("$BIN" list | grep -c "$ESC" || true)" "0"
 check "reset keeps ignored dir" "$([ -f target/out.jar ] && echo yes)" "yes"
 
 "$BIN" next >/dev/null
@@ -58,7 +59,7 @@ grep_ok "step 3 shows a nested add" "$(git status --short)" "^A  sub/c.txt"
 
 grep_ok "next past the end refuses" "$("$BIN" next 2>&1)" "Already at the last step"
 "$BIN" prev >/dev/null
-check "prev goes back"          "$("$BIN" status)" "$(printf '\033[36mStep 2/3 - Step two\033[0m')"
+check "prev goes back"          "$("$BIN" status)" "Step 2/3 - Step two"
 "$BIN" goto 1 >/dev/null
 check "goto jumps"              "$(git status --short | grep -c '^A  a.txt')" "1"
 a=$(git status --short); "$BIN" goto 1 >/dev/null; b=$(git status --short)
@@ -103,9 +104,14 @@ grep_ok "no steps explains both options" "$("$BIN" list 2>&1)" "git livedemo use
 echo x > x.txt; "$BIN" record "Recorded one" >/dev/null
 echo y > y.txt; "$BIN" record "Recorded two" >/dev/null
 "$BIN" reset >/dev/null; "$BIN" next >/dev/null; "$BIN" next >/dev/null
-check "record works with zero commits" "$("$BIN" status)" "$(printf '\033[36mStep 2/2 - Recorded two\033[0m')"
+check "record works with zero commits" "$("$BIN" status)" "Step 2/2 - Recorded two"
 check "state stays out of the tree"    "$(git ls-files | grep -c livedemo || true)" "0"
 check "state lives under .git"         "$([ -f .git/livedemo/state ] && echo yes)" "yes"
+
+# Outside a repo: the installer prints the version from wherever it ran.
+cd "$TMP"
+grep_ok "version works outside a repo" "$("$BIN" version 2>&1)" "^git-livedemo "
+grep_ok "help works outside a repo"    "$("$BIN" help 2>&1)" "step through a demo"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
