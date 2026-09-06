@@ -136,6 +136,14 @@ ln -s a.txt link
 check "a matching symlink is not a clash" "$?" "0"
 check "the symlink is the step's" "$(readlink link)" "a.txt"
 
+# Step 0 wipes the tree, but the ignore rules are the presenter's, not the demo's.
+fixture ignored
+"$BIN" reset >/dev/null
+check "step 0 keeps the ignore file"   "$([ -f .gitignore ] && echo yes)" "yes"
+check "step 0 keeps target/ ignored"   "$(git status --short | grep -c target || true)" "0"
+"$BIN" next >/dev/null
+grep_ok "the step takes .gitignore back" "$(git status --short)" "^A  .gitignore"
+
 fixture guard_foreign
 "$BIN" goto 1 >/dev/null 2>&1
 echo stray > stray.txt; git add -A; git commit -qm "committed mid-demo"

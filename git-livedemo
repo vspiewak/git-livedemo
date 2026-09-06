@@ -14,6 +14,7 @@ set -euo pipefail
 VERSION=1.0.0
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 PLAY_REF="refs/heads/${GIT_LIVEDEMO_PLAY_BRANCH:-livedemo}"
+TAB=$'\t'
 
 # Colour belongs to terminals: piped or redirected output has to stay plain, or it
 # lands as escape noise in logs, greps and IDE task panes. NO_COLOR turns it off.
@@ -73,6 +74,7 @@ cd "$ROOT"
 STATE_DIR="$GIT_DIR_ABS/livedemo"
 STATE="$STATE_DIR/state"
 CONFIG="$STATE_DIR/config"
+IGNORES="$STATE_DIR/ignores"
 mkdir -p "$STATE_DIR"
 
 # Steps come from any branch: the natural way to build a demo is to commit it up
@@ -100,6 +102,7 @@ tree_of()    { echo "${TREE[$(($1 - 1))]}"; }
 subject_of() { echo "${SUBJECT[$(($1 - 1))]}"; }
 
 is_number()    { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+is_gitignore() { case "$1" in .gitignore|*/.gitignore) return 0 ;; esac; return 1; }
 
 require_steps() {
   [ "$TOTAL" -gt 0 ] || die "No steps yet: branch '$STEPS_REF' does not exist.
@@ -163,6 +166,7 @@ worktree_blob() {
 # content. A function of its own because bash 3.2 cannot parse `case` inside $().
 clash_line() {
   local f=$1 obj
+  is_gitignore "$f" && return 0   # ours across step 0, see play
   obj=$(git rev-parse -q --verify "$2:$f" 2>/dev/null) || return 0
   if [ "$(worktree_blob "$f")" != "$obj" ]; then printf '  %s\n' "$f"; fi
 }
@@ -181,6 +185,29 @@ guard_untracked() {
   [ -z "$clash" ] || die "These untracked files would be overwritten by the step:
 $clash
 Move or commit them first."
+}
+
+# Step 0 empties the working tree -- and would take .gitignore with it, leaving every
+# ignored build directory suddenly untracked: on the projector, in the clash scan,
+# and within reach of `git add -A`. The ignore rules are yours, not the demo's, so
+# they are put back once the tree is empty. The step that owns the path takes it
+# from there, which is why clash_line never refuses over a .gitignore.
+save_ignore_files() {
+  git ls-files -s -z -- '*.gitignore' > "$IGNORES" 2>/dev/null || : > "$IGNORES"
+}
+
+restore_ignore_files() {
+  local entry path rest sha
+  while IFS= read -r -d '' entry; do
+    path=${entry#*"$TAB"}                       # mode SP sha SP stage TAB path
+    if is_gitignore "$path" && [ ! -e "$path" ]; then
+      rest=${entry#* }
+      sha=${rest%% *}
+      mkdir -p "$(dirname "$path")"
+      git cat-file blob "$sha" > "$path"
+    fi
+  done < "$IGNORES"
+  rm -f "$IGNORES"
 }
 
 # Playing rewrites the branch HEAD points at, so playback gets a branch of its own.
@@ -259,8 +286,10 @@ play() {
     git update-ref HEAD "$(commit_of $((n - 1)))"
   fi
 
+  if [ "$n" -eq 0 ]; then save_ignore_files; fi
   # --reset rewrites tracked files and drops the ones this step does not have.
   git read-tree -u --reset "$target_tree"
+  if [ "$n" -eq 0 ]; then restore_ignore_files; fi
 
   echo "$n" > "$STATE"
   if [ "$n" -eq 0 ]; then
