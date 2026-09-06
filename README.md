@@ -71,6 +71,21 @@ One file lands in `~/.local/bin/git-livedemo`, and git picks it up as a subcomma
 runtime, no config file, no directory added to your project. To uninstall, delete it.
 
 <details>
+<summary><strong>Does this modify my git installation?</strong></summary>
+
+No. Nothing is written into git, anywhere.
+
+Git has no plugin registry. When it meets a subcommand it does not recognise, it scans
+your `PATH` for an executable called `git-<name>` and runs it — that is the entire
+mechanism, and it is how `git lfs` and `git absorb` work too. Your git install
+(`git --exec-path`) is never touched.
+
+So `git-livedemo` is one ordinary script in your own bin directory. Read it before you
+run it; it is a single file. Deleting it is a complete uninstall, and git is exactly as
+it was.
+</details>
+
+<details>
 <summary>Other ways</summary>
 
 ```bash
