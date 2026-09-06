@@ -146,11 +146,48 @@ known_commit() {
   return 1
 }
 
+# The object git would record for an untracked path. A symlink stores the target it
+# points at rather than the bytes behind it, and a nested repo or an unreadable file
+# has no blob at all -- say none instead of guessing, so the caller refuses.
+worktree_blob() {
+  if [ -L "$1" ]; then
+    readlink "$1" | tr -d '\n' | git hash-object --stdin
+  elif [ -f "$1" ] && [ -r "$1" ]; then
+    git hash-object -- "$1"
+  else
+    echo none
+  fi
+}
+
+# One untracked path: prints it when the step would overwrite it with different
+# content. A function of its own because bash 3.2 cannot parse `case` inside $().
+clash_line() {
+  local f=$1 obj
+  obj=$(git rev-parse -q --verify "$2:$f" 2>/dev/null) || return 0
+  if [ "$(worktree_blob "$f")" != "$obj" ]; then printf '  %s\n' "$f"; fi
+}
+
+# read-tree leaves untracked files alone unless the step writes the same path, so
+# only a genuine clash is worth refusing over. Checked on every step, not just on
+# the first: scratch files appear mid-demo too, and those are the freshest work in
+# the repo. -z because git quotes any path that is not plain ASCII, and a quoted
+# path never matches the tree, so the clash would pass unnoticed.
+guard_untracked() {
+  local target_tree=$1 clash
+  clash=$(
+    git ls-files -z --others --exclude-standard |
+      while IFS= read -r -d '' f; do clash_line "$f" "$target_tree"; done
+  )
+  [ -z "$clash" ] || die "These untracked files would be overwritten by the step:
+$clash
+Move or commit them first."
+}
+
 # Playing rewrites the branch HEAD points at, so playback gets a branch of its own.
 # Without this, `next` rewinds whatever you were working on and deletes its files,
 # leaving the commits reachable only through the reflog.
 switch_to_play_branch() {
-  local target_tree=$1 head_ref name tip clash
+  local head_ref name tip
   head_ref=$(git symbolic-ref -q HEAD || echo "")
   [ "$head_ref" = "$PLAY_REF" ] && return 0
   name=${head_ref#refs/heads/}
@@ -164,16 +201,6 @@ them. Commit or stash first."
 so playing would lose it. Record it first:
   git livedemo record \"Step 1: ...\""
   fi
-
-  # read-tree leaves untracked files alone unless the step writes the same path,
-  # so only a genuine clash is worth refusing over.
-  clash=$(git ls-files --others --exclude-standard | while read -r f; do
-    obj=$(git rev-parse -q --verify "$target_tree:$f" 2>/dev/null) || continue
-    [ "$(git hash-object "$f")" != "$obj" ] && echo "  $f"
-  done)
-  [ -n "$clash" ] && die "These untracked files would be overwritten by the step:
-$clash
-Move or commit them first."
 
   tip=$(git rev-parse -q --verify "$PLAY_REF" 2>/dev/null || true)
   if [ -n "$tip" ] && ! known_commit "$tip"; then
@@ -220,8 +247,10 @@ play() {
   n=$((10#$n))   # a typed 08 is step eight, not a broken octal literal
   [ "$n" -le "$TOTAL" ] || die "There are only $TOTAL steps"
 
-  target_tree=$([ "$n" -eq 0 ] && echo "$EMPTY_TREE" || tree_of "$n")
-  switch_to_play_branch "$target_tree"
+  if [ "$n" -eq 0 ]; then target_tree=$EMPTY_TREE; else target_tree=$(tree_of "$n"); fi
+
+  guard_untracked "$target_tree"
+  switch_to_play_branch
 
   # HEAD sits on the previous step so the pending diff is exactly this step.
   if [ "$n" -le 1 ]; then

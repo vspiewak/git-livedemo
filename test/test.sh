@@ -98,6 +98,44 @@ echo scratch > scratch.txt
 "$BIN" goto 2 >/dev/null 2>&1
 check "keeps a non-clashing untracked file" "$(cat scratch.txt 2>/dev/null)" "scratch"
 
+# An untracked file the step would write byte for byte is not a clash, and saying so
+# must not abort the run.
+fixture guard_identical
+rm -f a.txt; git rm -q --cached a.txt; git commit -qm "drop a.txt"
+printf 'a\n' > a.txt
+"$BIN" goto 1 >/dev/null 2>&1
+check "an identical untracked file plays through" "$?" "0"
+check "and the step really played" "$(git status --short | grep -c '^A  a.txt')" "1"
+
+# The guard runs on every step, not only when switching onto the play branch.
+fixture guard_midplay
+"$BIN" goto 1 >/dev/null
+echo "MY NOTES" > b.txt
+grep_ok "refuses a clash created mid-demo" "$("$BIN" next 2>&1)" "would be overwritten"
+check "the mid-demo file survived" "$(cat b.txt)" "MY NOTES"
+
+# git quotes any path it cannot print raw, and a quoted path matches nothing.
+fixture guard_quoted
+printf 'orig\n' > 'quo"te.txt'; printf 'orig\n' > ' spaced.txt'
+git add -A; git commit -qm "Step four: odd names"
+git rm -q 'quo"te.txt' ' spaced.txt'; git commit -qm "Step five: drop them"
+printf 'MINE\n' > 'quo"te.txt'; printf 'MINE\n' > ' spaced.txt'
+clash=$("$BIN" goto 4 2>&1)
+grep_ok "refuses to clobber a quoted path" "$clash" 'quo"te.txt'
+grep_ok "refuses to clobber a spaced path" "$clash" ' spaced.txt'
+check "the quoted file survived"  "$(cat 'quo"te.txt')" "MINE"
+check "the spaced file survived"  "$(cat ' spaced.txt')" "MINE"
+
+# A symlink stores its target, not the bytes behind it.
+repo symlink
+echo a > a.txt; ln -s a.txt link; git add -A; git commit -qm "Step one"
+echo b > b.txt; git add -A; git commit -qm "Step two"
+"$BIN" use main >/dev/null; "$BIN" reset >/dev/null
+ln -s a.txt link
+"$BIN" goto 1 >/dev/null 2>&1
+check "a matching symlink is not a clash" "$?" "0"
+check "the symlink is the step's" "$(readlink link)" "a.txt"
+
 fixture guard_foreign
 "$BIN" goto 1 >/dev/null 2>&1
 echo stray > stray.txt; git add -A; git commit -qm "committed mid-demo"
