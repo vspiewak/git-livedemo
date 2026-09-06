@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 #
-# git-livedemo -- walk a demo forward one commit at a time, so the IDE shows each
-# step as a reviewable diff instead of a silent checkout.
+# git-livedemo -- step through a demo one commit at a time.
 #
-# Playing step N puts step N's tree into the index and the working tree while HEAD
-# stays on step N-1. `git checkout <commit>` would leave the Changes view empty;
-# this leaves step N sitting there as added files with line-level diffs.
+# Playing step N puts step N's tree in the index while HEAD stays on step N-1, so the
+# IDE shows the step as pending changes. `git checkout` would leave it empty.
 #
 # https://github.com/vspiewak/git-livedemo
 #
@@ -16,8 +14,7 @@ EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 PLAY_REF="refs/heads/${GIT_LIVEDEMO_PLAY_BRANCH:-livedemo}"
 TAB=$'\t'
 
-# Colour belongs to terminals: piped or redirected output has to stay plain, or it
-# lands as escape noise in logs, greps and IDE task panes. NO_COLOR turns it off.
+# Plain when not a terminal, so escapes never land in logs, greps or IDE panes.
 if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then CYAN=''; GREY=''; OFF=''
 else CYAN=$'\033[36m'; GREY=$'\033[2m'; OFF=$'\033[0m'; fi
 if [ -n "${NO_COLOR:-}" ] || [ ! -t 2 ]; then RED=''; OFF_ERR=''
@@ -57,8 +54,7 @@ EOF
 cmd=${1:-next}
 if [ $# -gt 0 ]; then shift; fi
 
-# Answered before the repository is touched: the installer prints the version from
-# whatever directory it ran in, and asking for help should never need a repo.
+# Answered before the repo is touched: both must work outside a repository.
 case "$cmd" in
   version|--version|-v) echo "git-livedemo $VERSION"; exit 0 ;;
   help|--help|-h)       usage; exit 0 ;;
@@ -77,17 +73,15 @@ CONFIG="$STATE_DIR/config"
 IGNORES="$STATE_DIR/ignores"
 mkdir -p "$STATE_DIR"
 
-# Steps come from any branch: the natural way to build a demo is to commit it up
-# on a branch of your own, so read that rather than force a parallel history.
+# Steps come from a branch you committed yourself, not a parallel history.
 STEPS_REF="${GIT_LIVEDEMO_STEPS_REF:-}"
 if [ -z "$STEPS_REF" ] && [ -f "$CONFIG" ]; then
   STEPS_REF=$(sed -n 's/^STEPS_REF=//p' "$CONFIG" | tail -1)
 fi
 STEPS_REF="${STEPS_REF:-steps}"
 
-# Step commits, oldest first; step N is ${STEP[N-1]}. Sha, tree and subject all come
-# out of one traversal: read separately, `use main` on a long branch forks a git
-# process per commit, on every single command.
+# Step commits, oldest first; step N is ${STEP[N-1]}. One traversal for all three:
+# read separately, a long branch forks a git process per commit, on every command.
 # A read loop rather than mapfile: macOS still ships bash 3.2.
 STEP=(); TREE=(); SUBJECT=()
 if git rev-parse -q --verify "$STEPS_REF" >/dev/null 2>&1; then
@@ -116,7 +110,7 @@ Otherwise build each step in the working tree and record it as you go:
 
 # ---------------------------------------------------------------------- safety
 
-# Does the index hold a state the demo can reproduce, i.e. is nothing unique staged?
+# Does the index hold a state the demo can reproduce?
 index_is_known() {
   local t i
   t=$(git write-tree)
@@ -132,9 +126,8 @@ known_commit() {
   return 1
 }
 
-# The object git would record for an untracked path. A symlink stores the target it
-# points at rather than the bytes behind it, and a nested repo or an unreadable file
-# has no blob at all -- say none instead of guessing, so the caller refuses.
+# The object git would record for an untracked path. A symlink hashes its target, and
+# a nested repo or unreadable file has no blob -- say none, so the caller refuses.
 worktree_blob() {
   if [ -L "$1" ]; then
     readlink "$1" | tr -d '\n' | git hash-object --stdin
@@ -145,8 +138,8 @@ worktree_blob() {
   fi
 }
 
-# One untracked path: prints it when the step would overwrite it with different
-# content. A function of its own because bash 3.2 cannot parse `case` inside $().
+# Prints an untracked path when the step would overwrite it with different content.
+# Its own function because bash 3.2 cannot parse `case` inside $().
 clash_line() {
   local f=$1 obj
   is_gitignore "$f" && return 0   # ours across step 0, see play
@@ -154,11 +147,9 @@ clash_line() {
   if [ "$(worktree_blob "$f")" != "$obj" ]; then printf '  %s\n' "$f"; fi
 }
 
-# read-tree leaves untracked files alone unless the step writes the same path, so
-# only a genuine clash is worth refusing over. Checked on every step, not just on
-# the first: scratch files appear mid-demo too, and those are the freshest work in
-# the repo. -z because git quotes any path that is not plain ASCII, and a quoted
-# path never matches the tree, so the clash would pass unnoticed.
+# read-tree leaves untracked files alone unless the step writes the same path, so only
+# a genuine clash is worth refusing over. Every step, not just the first: scratch files
+# appear mid-demo. -z because a quoted non-ASCII path would never match the tree.
 guard_untracked() {
   local target_tree=$1 clash
   clash=$(
@@ -170,11 +161,10 @@ $clash
 Move or commit them first."
 }
 
-# Step 0 empties the working tree -- and would take .gitignore with it, leaving every
-# ignored build directory suddenly untracked: on the projector, in the clash scan,
-# and within reach of `git add -A`. The ignore rules are yours, not the demo's, so
-# they are put back once the tree is empty. The step that owns the path takes it
-# from there, which is why clash_line never refuses over a .gitignore.
+# Step 0 empties the tree and would take .gitignore with it, leaving ignored build
+# directories suddenly untracked -- on the projector, and within reach of `git add -A`.
+# The rules are yours, not the demo's, so they go back once the tree is empty. The step
+# that owns the path takes it from there, hence the clash_line exemption.
 save_ignore_files() {
   git ls-files -s -z -- '*.gitignore' > "$IGNORES" 2>/dev/null || : > "$IGNORES"
 }
@@ -194,8 +184,7 @@ restore_ignore_files() {
 }
 
 # Playing rewrites the branch HEAD points at, so playback gets a branch of its own.
-# Without this, `next` rewinds whatever you were working on and deletes its files,
-# leaving the commits reachable only through the reflog.
+# Without it, `next` rewinds your work and leaves the commits only in the reflog.
 switch_to_play_branch() {
   local head_ref name origin tip
   head_ref=$(git symbolic-ref -q HEAD || echo "")
@@ -205,8 +194,7 @@ switch_to_play_branch() {
     origin=${head_ref#refs/heads/}
     name=$origin
   else
-    # A detached HEAD has no branch name to go back to, so remember the commit
-    # itself: otherwise `exit` falls back to main and strands it in the reflog.
+    # A detached HEAD has no branch name, so remember the commit itself.
     origin=$(git rev-parse -q --verify HEAD 2>/dev/null || echo "")
     name="a detached HEAD"
     [ -n "$origin" ] && name="detached HEAD ($(git rev-parse --short "$origin"))"
@@ -241,10 +229,9 @@ playing would rewind them. Delete it once you have salvaged them:
 # ----------------------------------------------------------------------- moves
 
 current() {
-  # Two steps can share a tree -- a revert, a deletion that restores an earlier
-  # state, an empty commit -- and the index alone cannot tell those apart. The state
-  # file can, so trust it while the index still agrees with it; fall back to reading
-  # the index when it does not, which is how an interrupted step heals itself.
+  # Two steps can share a tree -- a revert, an empty commit -- and the index alone
+  # cannot tell them apart. Trust the state file while the index agrees with it, and
+  # fall back to the index when it does not: that is how an interrupted step heals.
   local index_tree n saved
   index_tree=$(git write-tree)
   saved=$(cat "$STATE" 2>/dev/null || echo "")
@@ -273,9 +260,8 @@ play() {
   guard_untracked "$target_tree"
   switch_to_play_branch
 
-  # HEAD sits on the previous step so the pending diff is exactly this step.
-  # Step 1 has no previous step, so HEAD goes unborn and the whole tree reads as
-  # added -- which is what it is.
+  # HEAD sits on the previous step, so the pending diff is exactly this step. Step 1
+  # has none, so HEAD goes unborn and the whole tree reads as added.
   if [ "$n" -le 1 ]; then
     git update-ref -d HEAD 2>/dev/null || true
   else
@@ -326,8 +312,8 @@ case "$cmd" in
   use)
     branch=${1:-}
     [ -n "$branch" ] || die "usage: git livedemo use <branch>"
-    # A branch, verified as one: rev-parse would take a tag or a raw sha just as
-    # happily, and `record` would then create refs/heads/<that> and shadow it.
+    # Verified as a branch: rev-parse would take a tag or a sha just as happily, and
+    # `record` would then create refs/heads/<that> and shadow it.
     git show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null ||
       die "No such branch: $branch
 Steps come from a local branch you committed yourself; 'git branch' lists them."
@@ -341,9 +327,8 @@ GIT_LIVEDEMO_PLAY_BRANCH to move playback out of the way."
   record)
     msg=${1:-}
     [ -n "$msg" ] || die "usage: git livedemo record \"Step 1: what it adds\""
-    # Mid-playback the working tree holds a replayed step, not new work, and at step
-    # 0 it is empty on purpose. Appending either to the steps branch is never what
-    # you meant -- and after `use main` that branch is the one you work on.
+    # Mid-playback the tree holds a replayed step, not new work, and at step 0 it is
+    # empty on purpose. After `use main` the steps branch is the one you work on.
     [ "$(git symbolic-ref -q HEAD || echo "")" = "$PLAY_REF" ] &&
       die "You are mid-playback on '${PLAY_REF#refs/heads/}', so the working tree holds a
 step rather than new work. Leave playback first, then record:
