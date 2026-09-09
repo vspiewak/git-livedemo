@@ -16,7 +16,7 @@
 
 <p align="center">
   <img src="docs/demo.gif" width="900"
-       alt="git checkout leaves the Changes view empty; git livedemo next lands each step in it as pending changes">
+       alt="an editor driven by git livedemo: each step lands in the Changes view as pending changes with its diff in the editor, and exit puts the branch back">
 </p>
 
 You are presenting. You built the project up as a clean chain of commits, and you want to
@@ -29,12 +29,14 @@ patch, which is not a demo.
 
 `git-livedemo` fixes that. It puts step N into your working tree **and the index** while
 `HEAD` stays on step N-1, so each step lands in the IDE as pending changes — added files,
-added lines, ready to walk through.
+added lines, deleted files, ready to walk through.
 
 ```console
+$ git livedemo use main
+Playing 'main' (7 steps). You were on main; 'git livedemo exit' takes you back.
+Step 0/7 - empty working tree
+
 $ git livedemo next
-Playing on 'livedemo' (you were on main).
-  'git livedemo exit' puts you back on main.
 Step 1/7 - Add the project skeleton
   9 files changed, 598 insertions(+)
 
@@ -87,8 +89,7 @@ Build your demo the way you always would: a branch, one commit per step, oldest 
 Then point at it and go.
 
 ```bash
-git livedemo use main     # your commits are the steps
-git livedemo reset        # empty working tree — the "before" shot
+git livedemo use main     # your commits are the steps; lands on step 0, an empty tree
 git livedemo next         # step 1 appears in the IDE as pending changes
 git livedemo next         # step 2 …
 git livedemo exit         # back to the branch you came from
@@ -110,18 +111,22 @@ alias next='git livedemo next'
 | `git livedemo reset` | back to step 0 |
 | `git livedemo list` | every step, with `->` on the current one |
 | `git livedemo status` | where you are |
-| `git livedemo record "<msg>"` | append the working tree as a new step |
 | `git livedemo exit` | stop playing, back to your branch |
 
 Nothing takes a commit hash. You move by step number, or just keep typing `next`.
+`exit` takes an optional branch name for the rare case where it cannot work out where
+you started.
 
 ## How it works
 
-A step is an ordinary commit. Playing step N does three things:
+A step is an ordinary commit: every first-parent commit of the branch, oldest first.
+Playing step N does four things:
 
 1. points `HEAD` at step N-1, on a playback branch of its own;
 2. `git read-tree -u --reset` step N's tree into the index and working tree;
-3. leaves it there.
+3. puts the branch's `.gitignore` files back if the step does not have them;
+4. `git clean` takes whatever else is in the tree, sparing ignored files and nested
+   repositories.
 
 The gap between `HEAD` and the index **is** the step, which is exactly what the IDE
 renders. `git status` agrees:
@@ -130,6 +135,7 @@ renders. `git status` agrees:
 $ git livedemo goto 3 && git status --short
 A  src/main/java/com/example/Controller.java
 M  pom.xml
+D  src/main/java/com/example/Placeholder.java
 ```
 
 Step 1 has no previous step, so `HEAD` is left unborn and the whole tree reads as added.
@@ -138,50 +144,67 @@ step 1 for that reason; every later step has a real commit behind it.
 
 ## It will not eat your work
 
-Playing rewrites the branch `HEAD` points at, so playback runs on its own `livedemo`
-branch and never touches yours. On top of that, it refuses rather than destroy:
+Two rules, one on each side of the door.
 
-| situation | what happens |
-|---|---|
-| uncommitted changes to tracked files | refuses, tells you to commit or stash |
-| an untracked file the step would overwrite | refuses, names the file — on every step, not just the first |
-| an untracked file the step does not touch | left alone — `target/`, `.idea/`, scratch notes all survive |
-| step 0, which empties the working tree | your `.gitignore` files stay put, so ignored build output stays ignored |
-| the playback branch holds a commit that is not a step | refuses rather than rewind it |
+**Getting in is all or nothing.** `use` refuses if the working tree holds anything of
+yours — an edit, a staged file, an untracked file — and names it:
 
-Editing a tracked file mid-demo is discarded by the next step. That is deliberate: a
-mistyped live edit cannot derail the rest of the talk.
-
-Started from a detached `HEAD`? `exit` puts you back on that commit, not on `main`.
-
-State lives in `.git/livedemo/`, so there is nothing to add to `.gitignore` and nothing
-you can accidentally commit.
-
-## Authoring steps
-
-Already committed the demo up? `git livedemo use main` and you are done — a new commit on
-that branch is a new step, automatically.
-
-Prefer to grow it as you go? Build the change in the working tree and append it. It
-lands on the steps branch — `steps` by default, or whichever branch you last passed to
-`use`; the confirmation line names it:
-
-```bash
-git livedemo record "Step 3: wire the database"
+```console
+$ git livedemo use main
+The working tree is not clean, and playing would drop all of this:
+ M src/main/java/com/example/App.java
+?? notes.md
+Commit it, or stash it with: git stash push -u
 ```
 
-Recording mid-playback is refused: the working tree holds a replayed step then, not new
-work, and step 0 holds nothing at all.
+It refuses mid-merge or mid-rebase too, and it refuses when a `livedemo` branch already
+exists: git-livedemo creates that branch itself and deletes it on the way out, so one
+that is already there is yours, or a demo that ended badly. Playing would rewind it.
 
-Either way, **keep every step green**. Run your build before recording or committing a
-step; one that does not compile is a step you cannot demo.
+An uncommitted `.gitignore` is the one thing the gate lets through. It is what keeps
+`target/` out of the list above, and stashing it would un-ignore everything it covers
+and make the next attempt worse.
+
+**Once you are in, every step starts from its own tree and nothing else.** Whatever else
+is in the working tree is dropped without asking — an edit, a deletion, a file you typed
+live, a file you staged. That is safe precisely because entry refused on anything of
+yours: everything the demo drops, the demo put there. A mistyped live edit cannot derail
+the rest of the talk, and step 6 looks the same whether or not step 5 went to plan. Each
+step names what it took, five at a time, so nothing disappears silently:
+
+```console
+$ git livedemo next
+Step 2/7 - Add the HTTP endpoint
+  3 files changed, 87 insertions(+), 2 deletions(-)
+  dropped scratch/
+```
+
+Three things are never dropped:
+
+- **Ignored files**, at entry and at every step: `target/`, `.idea/`, `node_modules/` and
+  the rest of your build output. To make sure of it, the `.gitignore` files of the branch
+  are kept on disk at every step, including step 0 and the steps from before the commit
+  that added them — they show as untracked there, and the step that owns them takes them
+  back.
+- **`.gitignore` files**, whoever wrote them. A step cannot tell one you typed during the
+  demo from the rules protecting your build output, and dropping the wrong one would
+  un-ignore it. Remove it by hand and the next step takes what it was shielding.
+- **Nested repositories**, which includes every submodule. Their working directories are
+  left exactly as they are, and steps do not check them out. A directory someone typed
+  `git init` into on stage stays too; delete that one by hand.
+
+`exit` drops the last step the same way, checks out the branch you came from — or the
+commit, if you started from a detached `HEAD` — and deletes the playback branch. If the
+state under `.git/` is ever lost, `git livedemo exit <branch>` still gets you out.
+
+State lives in one file under `.git/`, so there is nothing to add to `.gitignore` and
+nothing you can accidentally commit.
 
 ## Configuration
 
 | variable | default | what it changes |
 |---|---|---|
 | `GIT_LIVEDEMO_PLAY_BRANCH` | `livedemo` | branch playback runs on |
-| `GIT_LIVEDEMO_STEPS_REF` | `steps` | steps branch, overriding `use` for one command |
 | `GIT_LIVEDEMO_PREFIX` | `~/.local/bin` | install directory |
 | `NO_COLOR` | unset | any value turns colour off; it is off anyway when output is not a terminal |
 
@@ -191,9 +214,27 @@ step; one that does not compile is a step you cannot demo.
 ./test/test.sh
 ```
 
-62 assertions over real repositories: diff shapes, every guard, an ignored build
-directory, quoted and space-edged filenames, symlinks, two steps sharing a tree, a
-detached `HEAD`, and a repository with no commits at all.
+151 assertions over real repositories: the entry gate in every shape, the diff of every
+step, what a move drops and what it spares, submodules and nested repositories, ignore
+files committed late, nested, deleted live or never committed at all, odd and non-ASCII
+filenames, symlinks, a merge, an empty first commit, two steps sharing a tree, a
+SHA-256 repository, and exit from a branch, from a detached `HEAD`, after a manual
+checkout and with the state file deleted.
+
+## Recording
+
+`docs/demo.gif` at the top of this page is generated, not hand-made:
+
+```bash
+./docs/demo/record.sh
+```
+
+It builds a throwaway demo repository in a temporary directory, drives git-livedemo
+through it for real, and reads the state back out of git after every command — the
+file list, the badges, the line counts, the diff and the terminal output are all what
+the commands actually produced, then drawn as an editor. It needs
+[uv](https://docs.astral.sh/uv/) to supply Pillow for one run; nothing is installed
+system-wide, and nothing here is needed to use git-livedemo.
 
 ## How it compares
 
